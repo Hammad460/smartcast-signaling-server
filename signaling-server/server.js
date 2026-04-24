@@ -39,6 +39,11 @@ function safeSend(ws, payload) {
 wss.on('connection', (ws) => {
   ws.roomId = null;
   ws.role = null;
+  ws.isAlive = true;
+
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
 
   ws.on('message', (raw) => {
     let message;
@@ -103,6 +108,23 @@ wss.on('connection', (ws) => {
   ws.on('error', () => {
     cleanupSocket(ws);
   });
+});
+
+const heartbeatInterval = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) {
+      cleanupSocket(ws);
+      ws.terminate();
+      continue;
+    }
+
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 15000);
+
+server.on('close', () => {
+  clearInterval(heartbeatInterval);
 });
 
 server.listen(port, () => {
