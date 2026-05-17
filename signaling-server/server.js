@@ -5,11 +5,8 @@ const port = process.env.PORT || 8080;
 
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
-    const rooms = roomPeers.size;
-    const peers = Array.from(roomPeers.values()).reduce((sum, set) => sum + set.size, 0);
-
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, rooms, peers, ts: new Date().toISOString() }));
+    res.end(JSON.stringify({ ok: true }));
     return;
   }
 
@@ -20,11 +17,6 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server, path: '/ws' });
 
 const roomPeers = new Map();
-
-function log(message, meta = {}) {
-  const payload = Object.keys(meta).length > 0 ? ` ${JSON.stringify(meta)}` : '';
-  console.log(`[Signal ${new Date().toISOString()}] ${message}${payload}`);
-}
 
 function cleanupSocket(ws) {
   const roomId = ws.roomId;
@@ -37,8 +29,6 @@ function cleanupSocket(ws) {
   if (peers.size === 0) {
     roomPeers.delete(roomId);
   }
-
-  log('peer removed', { roomId, role: ws.role, remaining: peers.size });
 }
 
 function safeSend(ws, payload) {
@@ -46,16 +36,9 @@ function safeSend(ws, payload) {
   ws.send(JSON.stringify(payload));
 }
 
-wss.on('connection', (ws, req) => {
+wss.on('connection', (ws) => {
   ws.roomId = null;
   ws.role = null;
-  ws.isAlive = true;
-
-  log('ws connected', { ip: req.socket.remoteAddress });
-
-  ws.on('pong', () => {
-    ws.isAlive = true;
-  });
 
   ws.on('message', (raw) => {
     let message;
@@ -84,7 +67,6 @@ wss.on('connection', (ws, req) => {
       roomPeers.get(roomId).add(ws);
 
       safeSend(ws, { type: 'joined', roomId, role });
-      log('peer joined room', { roomId, role, roomPeers: roomPeers.get(roomId).size });
       return;
     }
 
@@ -100,9 +82,6 @@ wss.on('connection', (ws, req) => {
       const peers = roomPeers.get(roomId);
       if (!peers) return;
 
-      const signalType = payload.type || 'unknown';
-      log('signal relay', { roomId, signalType, fanout: Math.max(peers.size - 1, 0) });
-
       for (const peer of peers) {
         if (peer === ws) continue;
         safeSend(peer, {
@@ -114,6 +93,16 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (message.type === 'wsPing') {
+      safeSend(ws, {
+        type: 'wsPong',
+        roomId: message.roomId || ws.roomId || null,
+        sentAt: message.sentAt || null,
+        serverAt: Date.now()
+      });
+      return;
+    }
+
     safeSend(ws, { type: 'error', message: 'Unknown message type' });
   });
 
@@ -121,29 +110,11 @@ wss.on('connection', (ws, req) => {
     cleanupSocket(ws);
   });
 
-  ws.on('error', (error) => {
-    log('ws error', { message: error.message });
+  ws.on('error', () => {
     cleanupSocket(ws);
   });
 });
 
-const heartbeat = setInterval(() => {
-  wss.clients.forEach((ws) => {
-    if (ws.isAlive === false) {
-      log('ws heartbeat timeout', { roomId: ws.roomId, role: ws.role });
-      ws.terminate();
-      return;
-    }
-
-    ws.isAlive = false;
-    ws.ping();
-  });
-}, 30_000);
-
-wss.on('close', () => {
-  clearInterval(heartbeat);
-});
-
 server.listen(port, () => {
-  log('signaling server listening', { port });
+  console.log(`SmartCast signaling server listening on :${port}`);
 });
